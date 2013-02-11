@@ -4,6 +4,8 @@
 # detect_spec_perf_degration
 ##
 
+### Functions ###
+
 function usage() {
   echo "This script analyzes spec performance and find the biggest increase in performance in the past."
   echo ""
@@ -53,7 +55,7 @@ function get_performance_diff() {
   echo $1 - $2|bc
 }
 
-# main function
+### Main ###
 
 original_branch=`git symbolic-ref HEAD | sed -e 's,.*/\(.*\),\1,'`
 from=`git rev-list HEAD | tail -n 1` 
@@ -61,6 +63,8 @@ to=`git rev-list --reverse HEAD | tail -n 1`
 interval=10
 spec=spec
 max_diff=0
+
+# parse options.
 
 while [ "$1" != "" ]
 do
@@ -96,6 +100,8 @@ do
   esac
 done
 
+# run specs for each revision.
+
 revs=`get_revs $from $to $interval`
 for rev in $revs
 do
@@ -123,8 +129,9 @@ done
 
 echo "Max increase of $max_diff seconds was observed between $max_diff_before and $max_diff_after."
 
-target=`echo $max_diff \* 0.5|bc`
+# run git bisect to identify a revision that caused performance degration.
 
+target=`echo $max_diff \* 0.5|bc`
 cat <<EOF >/tmp/detect_spec_perf_degration_bisect_command
 #!/bin/sh
 time=\`bundle exec rspec \$specs 2>> /dev/null | grep Finished | awk '{print \$3}'\`
