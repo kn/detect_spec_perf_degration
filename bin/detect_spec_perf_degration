@@ -1,0 +1,149 @@
+#!/bin/sh
+
+##
+# detect_spec_perf_degration
+##
+
+function usage() {
+  echo "This script analyzes spec performance and find the biggest increase in performance in the past."
+  echo ""
+  echo "./detect_spec_perf_degration"
+  echo "\t-h --help"
+  echo "\t-f --from: A revision number you want to start the analysis. Default is the initial commit."
+  echo "\t-t --to: A revision number you want to stop the analysis. Default is HEAD."
+  echo "\t-i --interval: This script runs spec every number of revisions given by an interval. Default: 10"
+  echo "\t-s --spec: A path of the spec(s) to analyze. Default: spec"
+}
+
+# gets revision number every $interval from $from to $to.
+function get_revs() {
+  local from="$1"
+  local to="$2"
+  local interval="$3"
+  echo `git rev-list --reverse $from..$to | awk -v interval="$interval" 'NR % interval == 0'`
+}
+
+# gets time of running $spec in seconds.
+function get_spec_performance() {
+  local spec="$1"
+  echo `bundle exec rspec $spec 2>> /dev/null | grep Finished | awk '{print $3}'`
+}
+
+# gets number of hashes to display given a time in seconds.
+function get_num_hashes() {
+  local time="$1"
+  echo $time \* 30|bc
+}
+
+# display spec performance.
+function display_spec_performance() {
+  local rev=$1
+  local time=$2
+  local hashes=`get_num_hashes $time`
+  echo "$rev `jot -b '#' - 1 $hashes | xargs | tr -d ' ' ` $time"
+}
+
+# checks if $1 is bigger than $2 and returns 1 if it is bigger.
+function is_bigger() {
+  echo "$1 > $2"|bc
+}
+
+# get performance diff between $ 1 and $2.
+function get_performance_diff() {
+  echo $1 - $2|bc
+}
+
+# main function
+
+original_branch=`git symbolic-ref HEAD | sed -e 's,.*/\(.*\),\1,'`
+from=`git rev-list HEAD | tail -n 1` 
+to=`git rev-list --reverse HEAD | tail -n 1`
+interval=10
+spec=spec
+max_diff=0
+
+while [ "$1" != "" ]
+do
+  case $1 in
+    -h | --help)
+      usage
+      exit
+      ;;
+    -f | --from)
+      from=$2
+      shift 2
+      ;;
+    -t | --to)
+      to=$2
+      shift 2
+      ;;
+    -i | --interval)
+      interval=$2
+      shift 2
+      ;;
+    -s | --spec)
+      spec=$2
+      shift 2
+      ;;
+    --)
+      shift
+      ;;
+    -*)
+      echo "invalid option: $1" 1>&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+revs=`get_revs $from $to $interval`
+for rev in $revs
+do
+  git checkout -q $rev
+  if [ -s "$spec" ]
+  then
+    time=`get_spec_performance $spec`
+    display_spec_performance $rev $time
+
+    if [ -n "$rev_before" ]
+    then
+      diff=`get_performance_diff $time $time_before`
+      is_max=`is_bigger $diff $max_diff`
+      if [ "$is_max" == "1" ]
+      then
+        max_diff=$diff
+        max_diff_before=$rev_before
+        max_diff_after=$rev
+      fi
+    fi
+    rev_before=$rev
+    time_before=$time
+  fi
+done
+
+echo "Max increase of $max_diff seconds was observed between $max_diff_before and $max_diff_after."
+
+target=`echo $max_diff \* 0.5|bc`
+
+cat <<EOF >/tmp/detect_spec_perf_degration_bisect_command
+#!/bin/sh
+time=\`bundle exec rspec \$specs 2>> /dev/null | grep Finished | awk '{print \$3}'\`
+found=\`echo \$time > $target|bc\`
+if [ "\$found" == "1" ]
+then
+  exit 1
+else
+  exit 0
+fi
+EOF
+
+if [ -s "/tmp/detect_spec_perf_degration_bisect_command" ]
+then
+  chmod +x /tmp/detect_spec_perf_degration_bisect_command
+  git bisect start $max_diff_after $max_diff_before
+  git bisect run /tmp/detect_spec_perf_degration_bisect_command
+else
+  echo "Failed to create /tmp/detect_spec_perf_degration_bisect_command"
+fi
+
+git checkout $original_branch -q 
